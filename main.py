@@ -157,7 +157,7 @@ def demo_shapes(
             plt.savefig(frame, bbox_inches="tight")
             plt.close()
             frames.append(imageio.imread(frame))
-    save_image_sequence(frames, OUTPUT / "dots_to_star.gif", duration=0.1)
+    save_image_sequence(frames, OUTPUT / "dots_to_star.gif", fps=10)
     print(f"wrote {OUTPUT / 'dots_to_star.gif'}")
 
 
@@ -188,7 +188,7 @@ def demo_portrait(
             plt.savefig(frame, bbox_inches="tight")
             plt.close()
             frames.append(imageio.imread(frame))
-    save_image_sequence(frames, OUTPUT / "portrait.gif", duration=0.1)
+    save_image_sequence(frames, OUTPUT / "portrait.gif", fps=10)
     print(f"wrote {OUTPUT / 'portrait.gif'}")
 
 

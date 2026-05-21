@@ -52,10 +52,15 @@ def _style_3d(fig: go.Figure, *, show_axes: bool = False, auto_range: bool = Fal
 
 
 def save_image_sequence(
-    images: list[np.ndarray], gif_path: str | Path, duration: float = 0.1
+    images: list[np.ndarray], gif_path: str | Path, fps: float = 10.0
 ) -> None:
-    """Encode a list of frames as a gif."""
-    imageio.mimsave(str(gif_path), images, duration=duration)
+    """Encode a list of frames as an infinitely-looping gif at ``fps`` frames/second.
+
+    ``duration`` is passed to imageio in **milliseconds** (integer) and
+    ``loop=0`` is set explicitly — imageio v2.37 silently drops sub-second
+    floats and writes a gif with 0 ms / frame, which viewers freeze on frame 0.
+    """
+    imageio.mimsave(str(gif_path), images, duration=int(1000 / fps), loop=0)
 
 
 def render_2d(
