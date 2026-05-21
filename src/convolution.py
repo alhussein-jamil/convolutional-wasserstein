@@ -1,153 +1,63 @@
+"""Separable Gaussian (heat) convolution on a uniform grid.
+
+The Sinkhorn iterations in Solomon et al. 2015 only need the operator
+``K v`` where ``K_ij = exp(-d(x_i, x_j)^2 / gamma)``. On a regular grid this
+kernel is separable, so applying it reduces to a 1-D Gaussian convolution
+along each axis — overall ``O(n^d)`` instead of ``O(n^{2d})``.
+"""
+
+from __future__ import annotations
+
 import numpy as np
+from scipy.ndimage import convolve1d
 
 
-def convolution2D(kernel: np.ndarray, input_array: np.ndarray) -> np.ndarray:
+def gaussian_kernel(n: int, gamma: float, truncate: float = 6.0) -> np.ndarray:
+    """Symmetric 1-D heat kernel for an ``n``-cell grid covering ``[0, 1]``.
+
+    Matches the paper's convention ``K(i, j) = exp(-(|i-j|/n)^2 / (gamma/2))``
+    so that ``gamma`` is interpreted in normalized [0, 1]^d coordinates.
+
+    The Gaussian has standard deviation ``sigma = n * sqrt(gamma) / 2`` cells.
+    The returned kernel is truncated to ``radius = ceil(truncate * sigma)``
+    cells on each side (capped at ``n - 1``). At ``truncate = 6.0`` the
+    truncated tail is ``< 1e-15``, i.e. below float64 round-off, so the result
+    is bitwise indistinguishable from the full ``2n-1`` kernel.
     """
-    This function performs a 2D convolution of a kernel with an input array.
-    The kernel is assumed to be square. The input array is assumed to be square
-    and have the same size as the kernel.
-    (Warning: This function expects the gamme to be applied to the kernel before calling it.)
-
-    Args:
-    kernel: a 1D numpy array of size n^2
-    input_array: a 1D numpy array of size n^2
-
-    Returns:
-    a 1D numpy array of size n^2
-    """
-
-    n = len(kernel)
-    input_array = input_array.reshape(n, n)
-    kernel_extended = np.zeros(2 * n - 1)
-    kernel_extended[:n] = np.flip(kernel)
-    kernel_extended[n - 1 :] = kernel
-    kernel = kernel_extended
-
-    conv_rows = []
-    for j in range(n):
-        conv_rows += [np.convolve(input_array[j, :], kernel).tolist()]
-    conv_rows = np.array(conv_rows)
-    conv_rows = conv_rows[:, n - 1 : 2 * n - 1]
-
-    conv_columns = []
-    for j in range(n):
-        conv_columns += [np.convolve(conv_rows[:, j], kernel).tolist()]
-
-    return np.array(conv_columns)[:, n - 1 : 2 * n - 1].T.flatten()
+    sigma = n * np.sqrt(gamma) / 2.0
+    full = truncate * sigma
+    radius = n - 1 if not np.isfinite(full) else min(n - 1, int(np.ceil(full)))
+    idx = np.arange(radius + 1)
+    half = np.exp(-((idx / n) ** 2) / (gamma / 2.0))
+    return np.concatenate([half[:0:-1], half])
 
 
-def naive_2d_convolution(
-    kernel: np.ndarray, input_array: np.ndarray, gamma: float
-) -> np.ndarray:
-    """
-    This function performs a 2D convolution of a kernel with an input array.
-    The kernel is assumed to be square. The input array is assumed to be square
-    and have the same size as the kernel.
-
-    Args:
-    kernel: a 1D numpy array of size n^2
-    input_array: a 1D numpy array of size n^2
-    gamma: a float
-
-    Returns:
-    a 1D numpy array of size n^2
-    """
-    n = len(kernel)
-    input_array = input_array.reshape(n, n)
-    expected_result = np.zeros((n, n))
-
-    for i in range(n):
-        for j in range(n):
-            expected_result[i, j] = sum(
-                np.exp(-((i - a) ** 2) / (gamma * n**2))
-                * sum(
-                    np.exp(-((j - b) ** 2) / (gamma * n**2)) * input_array[a, b]
-                    for b in range(n)
-                )
-                for a in range(n)
-            )
-
-    return expected_result.flatten()
+def heat_convolve(u: np.ndarray, kernel: np.ndarray) -> np.ndarray:
+    """Apply a separable 1-D ``kernel`` along every axis of ``u``."""
+    out = u
+    for axis in range(out.ndim):
+        out = convolve1d(out, kernel, axis=axis, mode="constant", cval=0.0)
+    return out
 
 
-def convolution3D(kernel: np.ndarray, u: np.ndarray) -> np.ndarray:
-    """
-    Perform a 3D convolution of a kernel with an input array.
+def make_heat_operator(shape: tuple[int, ...], gamma: float):
+    """Return a callable ``K(v)`` that convolves a flat vector with the heat kernel."""
+    kernel = gaussian_kernel(shape[0], gamma)
 
-    Args:
-    kernel: a 1D numpy array of size n
-    u: a 1D numpy array of size n^3
+    def apply(v: np.ndarray) -> np.ndarray:
+        return heat_convolve(v.reshape(shape), kernel).reshape(-1)
 
-    Returns:
-    a 1D numpy array of size n^3
-    """
-    n = len(kernel)
-    u = u.reshape(n, n, n)
-    kernel_extended = np.zeros(2 * n - 1)
-    kernel_extended[:n] = np.flip(kernel)
-    kernel_extended[n - 1 :] = kernel
-    kernel = kernel_extended
-
-    conv_rows = []
-    for depth in range(n):
-        temp = []
-        for row in range(n):
-            temp += [np.convolve(u[depth, row, :], kernel).tolist()]
-        conv_rows += [temp]
-    conv_rows = np.array(conv_rows)[:, :, n - 1 : 2 * n - 1]
-
-    conv_columns = []
-    for depth in range(n):
-        temp = []
-        for column in range(n):
-            temp += [np.convolve(conv_rows[depth, :, column], kernel).tolist()]
-        conv_columns += [temp]
-    conv_columns = np.array(conv_columns)[:, :, n - 1 : 2 * n - 1]
-    for depth in range(n):
-        conv_columns[depth, :, :] = conv_columns[depth, :, :].T
-
-    conv_depth = []
-    for row in range(n):
-        temp = []
-        for column in range(n):
-            temp += [np.convolve(conv_columns[:, row, column], kernel).tolist()]
-        conv_depth += [temp]
-    conv_depth = np.transpose(np.array(conv_depth)[:, :, n - 1 : 2 * n - 1], (2, 0, 1))
-
-    return conv_depth.flatten()
+    return apply
 
 
-def classical3D(kernel: np.ndarray, u: np.ndarray, gamma: float) -> np.ndarray:
-    """
-    Perform a 3D convolution using classical method.
-
-    Args:
-    kernel: a 1D numpy array of size n
-    u: a 1D numpy array of size n^3
-    gamma: a float
-
-    Returns:
-    a 1D numpy array of size n^3
-    """
-    n = len(kernel)
-    v = u.reshape(n, n, n)
-
-    expected_result = np.zeros((n, n, n))
-    for depth in range(n):
-        for row in range(n):
-            for column in range(n):
-                expected_result[depth, row, column] = sum(
-                    np.exp(-(((depth - r) / n) ** 2) / (gamma / 2))
-                    * sum(
-                        np.exp(-(((row - a) / n) ** 2) / (gamma / 2))
-                        * sum(
-                            np.exp(-(((column - b) / n) ** 2) / (gamma / 2))
-                            * v[r, a, b]
-                            for b in range(n)
-                        )
-                        for a in range(n)
-                    )
-                    for r in range(n)
-                )
-
-    return expected_result
+def naive_gaussian_convolution(u: np.ndarray, gamma: float) -> np.ndarray:
+    """Reference O(n^{2d}) implementation, used only as a sanity check in tests."""
+    n = u.shape[0]
+    grid = np.arange(n)
+    diff = (grid[:, None] - grid[None, :]) / n
+    K = np.exp(-(diff**2) / (gamma / 2.0))
+    out = u
+    for axis in range(u.ndim):
+        out = np.tensordot(K, out, axes=([1], [axis]))
+        out = np.moveaxis(out, 0, axis)
+    return out

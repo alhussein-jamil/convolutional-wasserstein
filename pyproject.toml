@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "convolutional-wasserstein"
+version = "0.1.0"
+description = "Reimplementation of Solomon et al. 2015, 'Convolutional Wasserstein Distances: Efficient Optimal Transportation on Geometric Domains'."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Alhussein Jamil" }]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "trimesh>=4.0",
+    "rtree>=1.1",
+    "scikit-image>=0.21",
+    "matplotlib>=3.7",
+    "plotly>=5.18",
+    "pandas>=2.0",
+    "imageio>=2.31",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+notebook = ["jupyter", "ipykernel", "nbformat"]
+dev = ["ruff", "pytest"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]

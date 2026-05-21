@@ -1,256 +1,206 @@
+"""Mesh utilities: voxelization, cotangent Laplacian, geodesic helpers."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from heapq import heappop, heappush
+from pathlib import Path
+
 import numpy as np
+import scipy.sparse as sp
 import trimesh
-from heapq import heappush, heappop
+from scipy.ndimage import binary_dilation
 
-
-def geodesic_distance(
-    point1: np.ndarray, point2: np.ndarray, mesh: trimesh.Trimesh
-) -> float:
-    """
-    Compute the geodesic distance between two points on a mesh.
-
-    Args:
-        point1 (np.ndarray): The first point.
-        point2 (np.ndarray): The second point.
-
-    Returns:
-        float: The geodesic distance between the two points.
-    """
-
-    # Compute the mesh connectivity
-    adjacency = mesh.vertex_neighbors
-
-    # Initialize the distances and visited flags
-    distances = np.full(len(mesh.vertices), np.inf)
-    visited = np.full(len(mesh.vertices), False)
-
-    # Define a priority queue for Dijkstra's algorithm
-    queue = []
-    heappush(queue, (0, np.where(np.all(mesh.vertices == point1, axis=1))[0][0]))
-
-    # Run Dijkstra's algorithm
-    while len(queue) > 0:
-        dist, vertex = heappop(queue)
-        if visited[vertex]:
-            continue
-        visited[vertex] = True
-        distances[vertex] = dist
-        if np.all(mesh.vertices[vertex] == point2):
-            break
-        for neighbor in adjacency[vertex]:
-            if not visited[neighbor]:
-                edge_length = np.linalg.norm(
-                    mesh.vertices[neighbor] - mesh.vertices[vertex]
-                )
-                heappush(queue, (dist + edge_length, neighbor))
-
-    # Compute the geodesic distance
-    g_dis = distances[np.where(np.all(mesh.vertices == point2, axis=1))[0][0]]
-
-    return g_dis
+# --------------------------------------------------------------------------- #
+# Grid index helpers
+# --------------------------------------------------------------------------- #
 
 
 def index_to_xyz(index: int, n: int) -> tuple[int, int, int]:
-    """Unflattens a 1D array index to 3D coordinates (x, y, z)."""
-    z = index // (n * n)
-    index %= n * n
-    y = index // n
-    x = index % n
+    """Inverse of :func:`xyz_to_index`."""
+    z, rem = divmod(index, n * n)
+    y, x = divmod(rem, n)
     return x, y, z
 
 
 def xyz_to_index(x: int, y: int, z: int, n: int) -> int:
-    """Flattens 3D coordinates (x, y, z) to a 1D array index."""
+    """Lexicographic flatten of a 3-D grid index."""
     return n * n * x + n * y + z
 
 
-def write_off(filename: str, vertices: np.ndarray, faces: np.ndarray) -> None:
-    """Writes mesh to an .off file."""
-    with open(filename, "w") as file:
-        file.write("OFF\n")
-        file.write(f"{len(vertices)} {len(faces)} 0\n")
-        for vert in vertices:
-            file.write(f"{vert[0]} {vert[1]} {vert[2]}\n")
-        for face in faces:
-            file.write(f"3 {face[0]} {face[1]} {face[2]}\n")
+def write_off(path: str | Path, vertices: np.ndarray, faces: np.ndarray) -> None:
+    """Write a triangular mesh to an ``.off`` file."""
+    with open(path, "w") as f:
+        f.write("OFF\n")
+        f.write(f"{len(vertices)} {len(faces)} 0\n")
+        np.savetxt(f, vertices, fmt="%g")
+        np.savetxt(f, np.column_stack([np.full(len(faces), 3), faces]), fmt="%d")
 
 
-def normalize(mesh: trimesh.Trimesh) -> None:
+# --------------------------------------------------------------------------- #
+# Geometry
+# --------------------------------------------------------------------------- #
+
+
+def normalize(mesh: trimesh.Trimesh, padding: float = 0.05) -> None:
+    """In-place: rescale and center ``mesh`` so it fits in ``[padding, 1-padding]^3``."""
+    bounds = mesh.bounds
+    extent = bounds[1] - bounds[0]
+    scale = (1.0 - 2.0 * padding) / max(extent.max(), 1e-12)
+    mesh.apply_scale(scale)
+    bbox_center = (mesh.bounds[0] + mesh.bounds[1]) / 2.0
+    mesh.apply_translation(0.5 - bbox_center)
+
+
+def cotangent_laplacian(mesh: trimesh.Trimesh) -> tuple[sp.csr_matrix, np.ndarray]:
+    """Discrete (positive-semidefinite) cotangent Laplacian and lumped vertex areas.
+
+    Returns ``(L, a)`` where ``L`` is sparse ``(n, n)`` and ``a`` is the
+    Voronoi-area (mass-lumped) vector of length ``n``.
     """
-    Normalize the mesh to fit within the unit cube [0,1]^3.
+    V = np.asarray(mesh.vertices, dtype=float)
+    F = np.asarray(mesh.faces, dtype=int)
+    n = len(V)
 
-    Args:
-        mesh (trimesh.Trimesh): The mesh to be normalized.
-    """
-    # Find the scale factor to fit the bounding box in [0,1]^3
-    scale_factor = min(0.9 / (mesh.bounds.max(axis=0) - mesh.vertices.min(axis=0)))
+    v0, v1, v2 = V[F[:, 0]], V[F[:, 1]], V[F[:, 2]]
+    e01 = v1 - v0
+    e12 = v2 - v1
+    e20 = v0 - v2
 
-    # Apply the scale factor to the mesh
-    mesh.apply_scale(scale_factor)
+    twice_area = np.linalg.norm(np.cross(e01, -e20), axis=1)
+    safe = np.maximum(twice_area, 1e-12)
 
-    # Translate the mesh so that its minimum vertex is at the origin
-    mesh.apply_translation(-mesh.vertices.min(axis=0))
-    min_x, min_y, min_z = mesh.vertices.min(axis=0)
-    max_x, max_y, max_z = mesh.vertices.max(axis=0)
-    mesh.apply_translation(
-        [
-            0.5 - (min_x + max_x) / 2,
-            0.5 - (min_y + max_y) / 2,
-            0.5 - (min_z + max_z) / 2,
-        ]
-    )
+    cot0 = -np.einsum("ij,ij->i", e01, e20) / safe
+    cot1 = -np.einsum("ij,ij->i", e12, e01) / safe
+    cot2 = -np.einsum("ij,ij->i", e20, e12) / safe
+
+    # Edge (j, k) opposite vertex 0 gets weight cot0/2, etc.
+    rows = np.concatenate([F[:, 1], F[:, 2], F[:, 2], F[:, 0], F[:, 0], F[:, 1]])
+    cols = np.concatenate([F[:, 2], F[:, 1], F[:, 0], F[:, 2], F[:, 1], F[:, 0]])
+    weights = 0.5 * np.concatenate([cot0, cot0, cot1, cot1, cot2, cot2])
+
+    L_off = sp.csr_matrix((-weights, (rows, cols)), shape=(n, n))
+    diag = -np.asarray(L_off.sum(axis=1)).ravel()
+    L = L_off + sp.diags(diag)
+
+    areas = np.zeros(n)
+    contrib = twice_area / 6.0  # face area / 3 = (2A)/6
+    np.add.at(areas, F[:, 0], contrib)
+    np.add.at(areas, F[:, 1], contrib)
+    np.add.at(areas, F[:, 2], contrib)
+    return L, areas
 
 
+def geodesic_distances(mesh: trimesh.Trimesh, source: int) -> np.ndarray:
+    """Dijkstra from a vertex index ``source``; returns one distance per vertex."""
+    adjacency = mesh.vertex_neighbors
+    V = mesh.vertices
+    dist = np.full(len(V), np.inf)
+    dist[source] = 0.0
+    heap: list[tuple[float, int]] = [(0.0, source)]
+    while heap:
+        d, u = heappop(heap)
+        if d > dist[u]:
+            continue
+        for v in adjacency[u]:
+            new = d + float(np.linalg.norm(V[v] - V[u]))
+            if new < dist[v]:
+                dist[v] = new
+                heappush(heap, (new, v))
+    return dist
+
+
+def gaussian_on_mesh(mesh: trimesh.Trimesh, source: int, sigma: float = 0.1) -> np.ndarray:
+    """Geodesic Gaussian centered at vertex ``source``, normalized to sum 1."""
+    d = geodesic_distances(mesh, source)
+    bump = np.exp(-(d**2) / (2.0 * sigma**2))
+    return bump / bump.sum()
+
+
+# --------------------------------------------------------------------------- #
+# Mesh ↔ voxel distribution
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
 class Mesh:
-    mesh: trimesh.base.Trimesh
-    n: int
-    distribution: np.ndarray
-    binary_distribution: np.ndarray
-    binary: np.ndarray
-    count: np.ndarray
-    points: list[np.ndarray]
-    cot_laplacian: np.ndarray
+    """Solid mesh with a Monte-Carlo voxel distribution on ``[0, 1]^3``.
 
-    def __init__(self, n: int = 40):
-        self.n = n
-        self.distribution = None
-        self.binary_distribution = None
-        self.binary = None
-        self.count = None
-        self.mesh = None
-        self.points = []
-        self.cot_laplacian = None
+    The mesh is normalized to fit in the unit cube, then voxelized at
+    resolution ``n``. ``distribution`` is the per-voxel probability (length
+    ``n^3``), ``binary`` is the 0/1 occupancy of voxels.
+    """
 
-    def update_distribution(self, num_points: int) -> None:
-        """Adds more points to the Monte Carlo method."""
-        points = np.random.rand(num_points, 3)
-        mask = self.mesh.contains(points)
-        for point, is_inside in zip(points, mask):
-            if is_inside:
-                x, y, z = (int(coord * self.n) for coord in point)
-                self.points.append(point)
-                self.count[xyz_to_index(x, y, z, self.n)] += 1
-        self.distribution = self.count / np.sum(self.count)
-        self.binary[self.count > 0] = 1
-        self.binary_distribution = self.binary / np.sum(self.binary)
+    n: int = 40
+    mesh: trimesh.Trimesh | None = None
+    count: np.ndarray | None = None
+    distribution: np.ndarray | None = None
+    binary: np.ndarray | None = None
+    binary_distribution: np.ndarray | None = None
 
-    def find_distribution(self, n_cuts: int = 20, num_points: int = 10000) -> None:
-        """Creates a distribution on [0,1]^3 after being cut into n_cuts^3 elements."""
-        self.n = n_cuts
-        points = np.random.rand(num_points, 3)
-        self.binary_distribution = np.zeros(n_cuts**3)
-        self.binary = np.zeros(n_cuts**3)
-        mask = self.mesh.contains(points)
-        print("Done masking")
-        self.distribution = np.zeros(n_cuts**3)
-        inside_points = []
+    @classmethod
+    def from_file(cls, path: str | Path, n: int = 40) -> Mesh:
+        m = cls(n=n)
+        m.mesh = trimesh.load(path, process=False)
+        normalize(m.mesh)
+        return m
 
-        for point, is_inside in zip(points, mask):
-            if is_inside:
-                x, y, z = (int(coord * n_cuts) for coord in point)
-                inside_points.append(point)
-                self.distribution[xyz_to_index(x, y, z, n_cuts)] += 1
+    # -- voxelization ------------------------------------------------------- #
 
-        self.count = self.distribution.copy()
-        self.distribution /= np.sum(self.distribution)
-        print("Done calculating distribution")
-        self.binary[self.count > 0] = 1
-        self.binary_distribution = self.binary / np.sum(self.binary)
-        self.points = inside_points
+    def voxelize(self) -> None:
+        """Voxelize the (normalized) solid mesh deterministically onto an ``n^3`` grid.
 
-    def fill_bin(self) -> None:
-        """Fills empty spaces in the 0-1 cubical mesh."""
-        binary = self.binary.copy().reshape((self.n, self.n, self.n))
-        for i in range(1, self.n - 1):
-            for j in range(1, self.n - 1):
-                for k in range(1, self.n - 1):
-                    if binary[i, j, k] == 0:
-                        neighbors = [
-                            binary[i, j, k + 1],
-                            binary[i, j, k - 1],
-                            binary[i, j + 1, k],
-                            binary[i, j - 1, k],
-                            binary[i + 1, j, k],
-                            binary[i - 1, j, k],
-                            binary[i + 1, j + 1, k + 1],
-                            binary[i - 1, j - 1, k - 1],
-                            binary[i + 1, j + 1, k - 1],
-                            binary[i - 1, j - 1, k + 1],
-                            binary[i + 1, j - 1, k + 1],
-                            binary[i - 1, j + 1, k - 1],
-                            binary[i + 1, j - 1, k - 1],
-                            binary[i - 1, j + 1, k + 1],
-                        ]
-                        if any(neighbors):
-                            binary[i, j, k] = 1
-        self.binary = binary.flatten()
-        self.binary_distribution = self.binary / np.sum(self.binary)
+        Uses ``trimesh.Trimesh.voxelized(pitch).fill()`` — a sweep-based
+        voxelizer that runs in seconds and bounded memory for any mesh size,
+        without the rtree caches that ``mesh.contains`` builds. Memory and
+        runtime are both ``O(n^3)``.
+        """
+        n = self.n
+        pitch = 1.0 / n
+        vox = self.mesh.voxelized(pitch=pitch).fill()
+        try:  # trimesh caches the ray index and matrix queries — drop them.
+            self.mesh._cache.clear()
+        except AttributeError:
+            pass
 
-    def normalize_mesh(self) -> None:
-        """Normalizes the mesh to fit within the unit cube [0, 1]^3."""
-        scale_factor = min(
-            0.90 / (self.mesh.bounds.max(axis=0) - self.mesh.vertices.min(axis=0))
-        )
-        self.mesh.apply_scale(scale_factor)
-        self.mesh.apply_translation(-self.mesh.vertices.min(axis=0))
-        bounds_min = self.mesh.vertices.min(axis=0)
-        bounds_max = self.mesh.vertices.max(axis=0)
-        translation = [0.5 - (bounds_min[i] + bounds_max[i]) / 2 for i in range(3)]
-        self.mesh.apply_translation(translation)
+        matrix = np.ascontiguousarray(vox.matrix)
+        start = np.round(np.asarray(vox.translation) / pitch).astype(int)
+        end = start + np.asarray(matrix.shape)
 
-    def cotangent_laplacian_with_area(self):
-        cot_weights = {}
-        for face in self.mesh.faces:
-            i, j, k = face
-            v1 = self.mesh.vertices[i]
-            v2 = self.mesh.vertices[j]
-            v3 = self.mesh.vertices[k]
-            a = np.linalg.norm(v2 - v3)
-            b = np.linalg.norm(v1 - v3)
-            c = np.linalg.norm(v1 - v2)
-            s = (a + b + c) / 2
-            # area weight
-            A = np.sqrt(s * (s - a) * (s - b) * (s - c))
+        full = np.zeros((n, n, n), dtype=bool)
+        dst_lo = np.maximum(start, 0)
+        dst_hi = np.minimum(end, n)
+        if np.any(dst_hi <= dst_lo):
+            raise RuntimeError("Voxelization fell outside the unit cube — check normalize().")
+        src_lo = dst_lo - start
+        src_hi = src_lo + (dst_hi - dst_lo)
+        full[dst_lo[0] : dst_hi[0], dst_lo[1] : dst_hi[1], dst_lo[2] : dst_hi[2]] = matrix[
+            src_lo[0] : src_hi[0], src_lo[1] : src_hi[1], src_lo[2] : src_hi[2]
+        ]
 
-            # angles of a triangle
-            alpha = np.arccos((b**2 + c**2 - a**2) / (2 * b * c))
-            beta = np.arccos((a**2 + c**2 - b**2) / (2 * a * c))
-            gamma = np.arccos((a**2 + b**2 - c**2) / (2 * a * b))
+        self.binary = full.astype(float).ravel()
+        self.count = self.binary.copy()
+        total = self.binary.sum()
+        if total == 0:
+            raise RuntimeError("Voxelization produced no occupied cells.")
+        self.distribution = self.count / total
+        self.binary_distribution = self.binary / total
 
-            # their cot
-            cot_alpha = A / np.sin(alpha)
-            cot_beta = A / np.sin(beta)
-            cot_gamma = A / np.sin(gamma)
+    def fill_holes(self, iterations: int = 3, connectivity: int = 26) -> None:
+        """Close small holes in the voxel occupancy via binary dilation.
 
-            cot_weights[(i, j)] = cot_alpha
-            cot_weights[(j, k)] = cot_beta
-            cot_weights[(k, i)] = cot_gamma
-        n = len(self.mesh.vertices)
-        laplacian = np.zeros((n, n))
-        for (i, j), w in cot_weights.items():
-            laplacian[i, i] += w
-            laplacian[j, j] += w
-            laplacian[i, j] -= w
-        self.laplacian = laplacian
-        self.cot_laplacian = laplacian
-
-    def gaussain_on_mesh(self, vertex, sigma=0.1):
-        vertices = self.mesh.vertices
-        center = vertices[vertex]
-        geodesic_distances = np.array(
-            [geodesic_distance(center, v, self.mesh) for v in vertices]
-        )
-        # define the Gaussian distribution function
-        A = 1.0  # scaling factor
-
-        # standard deviation of the distribution
-        def gaussian_func(x):
-            return A * np.exp(-((x) ** 2) / (2 * sigma**2))
-
-        # compute the Gaussian distribution value for each vertex
-        gaussian_values = gaussian_func(geodesic_distances)
-        gaussian_values = (gaussian_values - np.min(gaussian_values)) / (
-            np.max(gaussian_values) - np.min(gaussian_values)
-        )
-
-        return gaussian_values / gaussian_values.sum()
+        ``connectivity`` is 6 (face neighbors only) or 26 (full 3x3x3 block).
+        The original implementation used 26-neighborhood; that is the default.
+        """
+        if self.binary is None:
+            raise RuntimeError("Call voxelize() before fill_holes().")
+        if connectivity == 26:
+            structure = np.ones((3, 3, 3), dtype=bool)
+        elif connectivity == 6:
+            structure = None  # scipy default
+        else:
+            raise ValueError("connectivity must be 6 or 26")
+        vol = self.binary.reshape(self.n, self.n, self.n).astype(bool)
+        vol = binary_dilation(vol, structure=structure, iterations=iterations)
+        self.binary = vol.astype(float).ravel()
+        self.binary_distribution = self.binary / self.binary.sum()

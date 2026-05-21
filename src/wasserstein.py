@@ -1,183 +1,118 @@
+"""Wasserstein barycenter via the convolutional Sinkhorn iterations of
+Solomon et al. 2015 (Algorithm 2).
+
+The iteration only ever uses the kernel as a linear operator ``K v``. So a
+single :func:`wasserstein_barycenter` works on any domain — uniform 2-D/3-D
+grids or triangle meshes — by accepting the operator as a callable.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+
 import numpy as np
-from .convolution import convolution2D, convolution3D
-from .post_processing import (
-    entropic_sharpening as entropic_sharpening_func,
-    calculate_entropy,
-)
-from typing import List, Union, Optional
+import scipy.linalg as slin
 
-from scipy import linalg as slin
+from .convolution import make_heat_operator
+from .post_processing import entropic_sharpening, entropy
+
+Operator = Callable[[np.ndarray], np.ndarray]
+_EPS = 1e-20
 
 
-def wass_bary_2d(
-    mus: List[np.ndarray],
-    coef: List[Union[int, float]],
-    a: np.ndarray,
-    n: int,
-    gamma: float = 0.01,
+def wasserstein_barycenter(
+    mus: Sequence[np.ndarray],
+    weights: Sequence[float],
+    area: np.ndarray,
+    apply_kernel: Operator,
     iterations: int = 100,
-    entropic_sharpening: bool = True,
+    sharpen: bool = True,
 ) -> np.ndarray:
+    """Compute a Wasserstein barycenter on an arbitrary geometric domain.
+
+    Parameters
+    ----------
+    mus
+        Input distributions, each a flat ``(N,)`` non-negative vector summing
+        to 1 (or that will be normalized implicitly by the Sinkhorn loop).
+    weights
+        Mixing coefficients (``alpha_i`` in the paper) summing to 1.
+    area
+        Per-cell area / mass-lumped vertex area, shape ``(N,)``.
+    apply_kernel
+        Callable mapping a flat ``(N,)`` vector to ``K v`` where ``K`` is the
+        heat kernel of the domain. For grids use
+        :func:`src.convolution.make_heat_operator`; for meshes use
+        :func:`mesh_heat_operator` below.
+    iterations
+        Number of Sinkhorn iterations.
+    sharpen
+        Whether to apply entropic sharpening after each iteration.
     """
-    Compute the Wasserstein barycenter of a set of probability distributions.
-
-    Args:
-        mus (List[np.ndarray]): The list of probability distributions.
-        coef (List[Union[int, float]]): The list of coefficients.
-        a (np.ndarray): The weights.
-        n (int): The size of the distributions.
-        gamma (float): The regularization parameter.
-        iterations (int): The number of iterations.
-        entropic_sharpening (bool): Whether to use entropic sharpening.
-
-    Returns:
-        np.ndarray: The Wasserstein barycenter.
-    """
-
+    mus = [np.asarray(mu, dtype=float) + _EPS for mu in mus]
+    weights = np.asarray(weights, dtype=float)
+    area = np.asarray(area, dtype=float)
     k = len(mus)
-    v = np.ones((k, n**2))
-    w = np.ones((k, n**2))
-    d = np.zeros((k, n**2))
-    eps = 1e-20
-    for i in range(k):
-        mus[i] += eps
-    E = np.exp([-i * i / (gamma / 2) / n**2 for i in range(n)])
-    for _ in range(iterations):
-        bary = np.ones(n**2)
-        for i in range(k):
-            w[i] = mus[i] / convolution2D(E, a * v[i])
-            d[i] = v[i] * convolution2D(E, a * w[i])
-            bary = bary * (d[i] ** coef[i])
-        if entropic_sharpening:
-            bary = entropic_sharpening_func(
-                bary, max(calculate_entropy(u, np.array(a)) for u in mus), np.array(a)
-            )
-        for i in range(k):
-            v[i] = v[i] * bary / d[i]
-
-    return bary
-
-
-def wass_bary_3d(
-    mus: List[np.ndarray],
-    coef: List[Union[int, float]],
-    a: np.ndarray,
-    n: int,
-    L: Optional[np.ndarray] = None,
-    prefactorized: bool = True,
-    conv: bool = False,
-    iterations: int = 100,
-    gamma: float = 0.01,
-    entropic_sharpening: bool = True,
-) -> np.ndarray:
-    """
-    Compute the Wasserstein barycenter of a set of probability distributions in 3D.
-
-    Args:
-        mus (List[np.ndarray]): The list of probability distributions.
-        coef (List[Union[int, float]]): The list of coefficients.
-        a (np.ndarray): The weights.
-        n (int): The size of the distributions.
-        L (Optional[np.ndarray]): The factorization matrix L.
-        prefactorized (bool): Whether the factorization matrix L is pre-factorized.
-        conv (bool): Whether to use convolution.
-        iterations (int): The number of iterations.
-        gamma (float): The regularization parameter.
-        entropic_sharpening (bool): Whether to use entropic sharpening.
-
-    Returns:
-        np.ndarray: The Wasserstein barycenter.
-    """
-    k = len(mus)
-    v = np.ones((k, n**3))
-    w = np.ones((k, n**3))
-    d = np.zeros((k, n**3))
-    eps = 1e-20
-    E = np.exp([-i * i / (gamma / 2) / n**2 for i in range(n)])
-
-    # Add small epsilon to the distributions
-    for i in range(k):
-        mus[i] += eps
-
-    if not prefactorized and not conv:
-        L_inv = np.linalg.inv(L)
-
-    for _ in range(iterations):
-        bary = np.ones(n**3)
-        for i in range(k):
-            if not conv:
-                if prefactorized:
-                    w[i] = mus[i] / slin.solve_triangular(
-                        L.T, slin.solve_triangular(L, a * v[i], lower=True)
-                    )
-                    d[i] = v[i] * slin.solve_triangular(
-                        L.T, slin.solve_triangular(L, a * w[i], lower=True)
-                    )
-                else:
-                    w[i] = mus[i] / (L_inv @ (a * v[i]))
-                    d[i] = v[i] * (L_inv @ (a * w[i]))
-            else:
-                w[i] = mus[i] / convolution3D(E, a * v[i])
-                d[i] = v[i] * convolution3D(E, a * w[i])
-            bary = bary * (d[i] ** coef[i])
-
-        if entropic_sharpening:
-            bary = entropic_sharpening_func(
-                bary, max(calculate_entropy(u, np.array(a)) for u in mus), np.array(a)
-            )
-
-        for i in range(k):
-            v[i] = v[i] * (bary / d[i])
-
-    return bary
-
-
-def wass_bary_mesh(
-    mus: List[np.ndarray],
-    coef: List[Union[int, float]],
-    a: np.ndarray,
-    n: int,
-    L=None,
-    prefactorized=True,
-    conv=False,
-    iterations=100,
-    gamma=0.01,
-    entropic_sharpening=True,
-):
-    k = len(mus)
+    n = mus[0].shape[0]
 
     v = np.ones((k, n))
     w = np.ones((k, n))
     d = np.zeros((k, n))
-    eps = 1e-20
 
-    # add small epsilon to the distributions
-    for i in range(k):
-        mus[i] += eps
+    sharpen_bound = max(entropy(mu, area) for mu in mus) if sharpen else None
+    bary = np.ones(n)
 
-    if not prefactorized and not conv:
-        L_inv = np.linalg.inv(L)
-    for j in range(iter):
+    for _ in range(iterations):
         bary = np.ones(n)
         for i in range(k):
-            if not conv:
-                if prefactorized:
-                    w[i] = mus[i] / slin.solve_triangular(
-                        L.T, slin.solve_triangular(L, a * v[i], lower=True)
-                    )
-                    d[i] = v[i] * slin.solve_triangular(
-                        L.T, slin.solve_triangular(L, a * w[i], lower=True)
-                    )
+            kv = np.maximum(apply_kernel(area * v[i]), _EPS)
+            w[i] = mus[i] / kv
+            kw = np.maximum(apply_kernel(area * w[i]), _EPS)
+            d[i] = np.maximum(v[i] * kw, _EPS)
+            bary *= d[i] ** weights[i]
+        if sharpen:
+            bary = entropic_sharpening(bary, sharpen_bound, area)
+        v *= bary / d
 
-                else:
-                    w[i] = mus[i] / (L_inv @ (a * v[i]))
-                    d[i] = v[i] * (L_inv @ (a * w[i]))
-
-            bary = bary * (d[i] ** coef[i])
-        if entropic_sharpening:
-            bary = entropic_sharpening_func(
-                bary, max(calculate_entropy(u, np.array(a)) for u in mus), np.array(a)
-            )
-        for i in range(k):
-            v[i] = v[i] * (bary / (d[i]))
     return bary
+
+
+def grid_barycenter(
+    mus: Sequence[np.ndarray],
+    weights: Sequence[float],
+    n: int,
+    gamma: float = 0.01,
+    iterations: int = 100,
+    sharpen: bool = True,
+) -> np.ndarray:
+    """Convenience wrapper: barycenter of distributions on an ``n^d`` grid.
+
+    Each ``mu`` must be a flat array of length ``n^d`` (``d`` inferred).
+    Returns the barycenter as a flat array of the same length.
+    """
+    n_total = mus[0].size
+    d = int(round(np.log(n_total) / np.log(n)))
+    shape = (n,) * d
+    area = np.full(n_total, 1.0 / n_total)
+    return wasserstein_barycenter(
+        mus,
+        weights,
+        area,
+        apply_kernel=make_heat_operator(shape, gamma),
+        iterations=iterations,
+        sharpen=sharpen,
+    )
+
+
+def mesh_heat_operator(L_cholesky: np.ndarray) -> Operator:
+    """Heat-diffusion operator on a mesh from a Cholesky factor of ``D_a + (gamma/2) L``.
+
+    Applies one backward Euler step of the heat equation, i.e. ``H_t = (D_a + tL)^{-1}``
+    times the right-hand side.
+    """
+
+    def apply(v: np.ndarray) -> np.ndarray:
+        y = slin.solve_triangular(L_cholesky, v, lower=True)
+        return slin.solve_triangular(L_cholesky.T, y, lower=False)
+
+    return apply

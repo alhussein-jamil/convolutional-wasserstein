@@ -1,323 +1,382 @@
-import trimesh.exchange
-import trimesh.exchange.export
-from src.utils import load_normalized_image as load_image
-import matplotlib.pyplot as plt
-from src.wasserstein import wass_bary_2d, wass_bary_3d
-import numpy as np
-import imageio
-from pathlib import Path
-import tempfile
-from src.utils import (
-    load_BW_portrait,
-    interpolate_bw_images,
-    distribution_to_cloud,
-    point_cloud_plot,
-    plot_3d_binary,
-    plot_cubic_mesh,
-    distribution_to_binary,
-    smoothed_figure_sub,
-)
-from src.mesh import Mesh
-import trimesh
+"""Demos for the Convolutional Wasserstein Distances reimplementation.
+
+Usage
+-----
+    python -m main shapes     # 5x5 grid of 2-D shape barycenters + dots-to-star gif
+    python -m main portrait   # 1-D portrait morph (Monge <-> Kantorovich)
+    python -m main meshes     # 3-D mesh barycenters via grid convolution
+    python -m main gaussian   # Heat-kernel Gaussians + interpolation on a mesh
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
 import pickle
+import tempfile
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
+
+import imageio.v2 as imageio
+import matplotlib.pyplot as plt
+import numpy as np
 import plotly.subplots as sp
-import plotly.graph_objects as go
+import scipy.linalg as slin
+import trimesh
+
+from src import (
+    Mesh,
+    cotangent_laplacian,
+    gaussian_on_mesh,
+    grid_barycenter,
+    load_binary_image,
+    load_grayscale_image,
+    mesh_heat_operator,
+    wasserstein_barycenter,
+)
+from src.viz import (
+    distribution_to_binary,
+    distribution_to_point_cloud,
+    mesh_scalar_field,
+    point_cloud,
+    save_image_sequence,
+    voxel_cubes,
+    voxel_isosurface,
+)
+
+REPO = Path(__file__).resolve().parent
+OUTPUT = REPO / "output"
 
 
-def shape_transforms():
-    # Load the images
-    path = "data/images/shapes/"
-    dots = load_image(path + "shape2filled.png")
-    star = load_image(path + "shape3filled.png")
-    fivestar = load_image(path + "shape4filled.png")
-    circle = load_image(path + "shape1filled.png")
+# --------------------------------------------------------------------------- #
+# Parallel barycenter map
+# --------------------------------------------------------------------------- #
 
-    n = star.shape[0]
-    dots = dots.reshape(-1)
-    star = star.reshape(-1)
-    circle = circle.reshape(-1)
-    fivestar = fivestar.reshape(-1)
-    grid_size = 5
-    _, axes = plt.subplots(nrows=grid_size, ncols=grid_size, figsize=(11, 11))
+# Workers receive ``mus`` once via ``initializer``; only the per-task coefficient
+# is shipped through the queue, keeping IPC cost ~O(grid_size^2) integers.
 
-    for i in range(grid_size):
-        for j in range(grid_size):
-            coef = (
-                1.0
-                / (grid_size - 1) ** 2
-                * np.array(
-                    [
-                        (grid_size - 1 - j) * (grid_size - 1 - i),
-                        j * (grid_size - 1 - i),
-                        j * i,
-                        (grid_size - 1 - j) * i,
-                    ]
-                )
-            )
-            bary = wass_bary_2d(
-                mus=[circle, star, fivestar, dots],
-                coef=coef,
-                a=np.ones((n**2)) / (0.0 + n**2),
-                n=n,
-                gamma=0.0015,
-                iterations=3,
-                entropic_sharpening=True,
-            )
-            bary = bary.reshape(n, n)
-            threshold = 1e-6
-            bary = np.where(bary > threshold, 1, 0)
-            axes[i, j].imshow(bary, cmap="binary")
-            axes[i, j].set_axis_off()  # turn off axes
-            plt.subplots_adjust(
-                left=0, bottom=0, right=1, top=1, wspace=0, hspace=0
-            )  # adjust spacing
-
-    plt.savefig(output_dir / "shapes.png", bbox_inches="tight")
-    plt.show()
-
-    n_images = 20
-
-    images = []
-    with tempfile.TemporaryDirectory() as temp_dir:
-        for i in range(n_images):
-            bary = wass_bary_2d(
-                mus=[dots, star],
-                coef=[1.0 / n_images * i, (1 - 1.0 / n_images * i)],
-                a=np.ones((n**2)) / (0.0 + n**2),
-                n=n,
-                gamma=0.0015,
-                iterations=3,
-                entropic_sharpening=False,
-            )
-            bary = bary.reshape(n, n)
-            threshold = (1e-6) * 5
-            bary = np.where(bary > threshold, 1, 0)
-            # Plot the heatmap using imshow
-            plt.imshow(bary, cmap="binary")
-            plt.axis("off")  # turn off axes to make gif cleaner
-            plt.savefig(
-                Path(temp_dir) / f"image_{i}.png", bbox_inches="tight"
-            )  # save figure as png
-            plt.close()
-            images.append(
-                imageio.imread(Path(temp_dir) / f"image_{i}.png")
-            )  # add image to list for gif
-
-        gif_path = "dots_to_star.gif"
-        # create gif from list of images
-        imageio.mimsave(output_dir / gif_path, images, duration=0.1)
+_CTX: dict = {}
 
 
-def portrait_transform():
-    epsilon = 0
-    monge = load_BW_portrait("data/monge.png").reshape((1, -1)) + epsilon
-    m = np.max(monge)  # np.ones((1,163**2))-
-    monge = m - monge
-    kant = load_BW_portrait("data/kantorowich.png").reshape((1, -1)) + epsilon
-    m = np.max(kant)
-    kant = m - kant
-    with tempfile.TemporaryDirectory() as temp_dir:
-        images = interpolate_bw_images(
-            mus=[monge, kant],
-            n_interpolations=20,
-            gamma=0.0002,
-            n_iter=100,
-            temp_dir=temp_dir,
-        )
-        imageio.mimsave("output/portrait_monge_kantor.gif", images, duration=0.1)
+def _init_worker(mus: list, n: int, gamma: float, iterations: int, sharpen: bool) -> None:
+    _CTX.update(mus=mus, n=n, gamma=gamma, iterations=iterations, sharpen=sharpen)
 
 
-def init_meshes(n=40) -> tuple[list[Mesh], list[str]]:
-    meshes_output_dir = output_dir / "meshes"
-    meshes_output_dir.mkdir(exist_ok=True, parents=True)
-    # number of cuts in each axe
-    meshes: list[Mesh] = []
-    meshes_names = []
-    meshes_path = "data/meshes"
-    for file in Path(meshes_path).iterdir():
-        name = file.name.split(".")[0]
-        name = name.replace("-", "_").replace(" ", "_")
-        meshes_names += [name]
-        exec(name + " = " + "Mesh(n=n)")
-        meshes += [eval(name)]
-        exec(name + ".mesh = trimesh.load(file)")
-
-    scene = trimesh.Scene([meshes[meshes_names.index("duck")].mesh])
-    scene.show()
-
-    n_points_thousand = 6
-
-    # initial number of points for monte-carlo
-    n_pts = 1000
-
-    for m in meshes:
-        m.normalize_mesh()
-        m.find_distribution(n, n_pts)
-
-    for i, m in enumerate(meshes):
-        print("Calculating distribution for " + meshes_names[i])
-        if (
-            meshes_output_dir / Path(meshes_names[i] + str(n_points_thousand) + ".pkl")
-        ).is_file():
-            print("already exists")
-            with open(
-                meshes_output_dir / (meshes_names[i] + str(n_points_thousand) + ".pkl"),
-                "rb",
-            ) as f:
-                meshes[i] = pickle.load(f)
-        else:
-            for _ in range(n_points_thousand):
-                m.update_distribution(10000)
-            for _ in range(3):
-                m.fillBin()
-            with open(
-                meshes_output_dir
-                / Path(meshes_names[i] + str(n_points_thousand) + ".pkl"),
-                "wb",
-            ) as f:
-                pickle.dump(meshes[i], f)
-
-    return meshes, meshes_names
-
-
-def mesh_transform(meshes: list[Mesh], meshes_names: list[str], n: int = 40) -> None:
-    point_cloud_plot(
-        distribution_to_cloud(
-            meshes[meshes_names.index("duck")].distribution.reshape(n, n, n), scale=3
-        )
+def _bary_worker(coef: np.ndarray) -> np.ndarray:
+    return grid_barycenter(
+        _CTX["mus"],
+        coef,
+        _CTX["n"],
+        gamma=_CTX["gamma"],
+        iterations=_CTX["iterations"],
+        sharpen=_CTX["sharpen"],
     )
-    plot_3d_binary(meshes[meshes_names.index("duck")].binary_distribution, n)
 
-    plot_cubic_mesh(meshes[meshes_names.index("duck")].binary, n)
 
-    a = [1.0 / (n * n * n)] * (n * n * n)
-    gamma = 0.0015
-    bin = []
+def _bary_map(
+    mus: list,
+    coefs: list,
+    n: int,
+    gamma: float,
+    iterations: int,
+    sharpen: bool,
+    workers: int | None,
+) -> list[np.ndarray]:
+    """Compute ``grid_barycenter`` for many ``coefs`` in parallel (or serial if workers<=1)."""
+    workers = workers or os.cpu_count() or 1
+    workers = min(workers, len(coefs))
+    if workers <= 1:
+        return [
+            grid_barycenter(mus, c, n, gamma=gamma, iterations=iterations, sharpen=sharpen)
+            for c in coefs
+        ]
+    with ProcessPoolExecutor(
+        max_workers=workers,
+        initializer=_init_worker,
+        initargs=(mus, n, gamma, iterations, sharpen),
+    ) as ex:
+        return list(ex.map(_bary_worker, coefs))
 
-    # Define the number of subplots
-    grid_size = 4
-    num_plots = grid_size**2
 
-    choosen_meshes = [np.random.randint(len(meshes)) for _ in range(4)]
-    choosen_meshes_names = ["duck", "torus", "mushroom", "sphere_102"]
-    # choosen_meshes_names = random.sample(meshes_names,4)
-    foldername = "".join(choosen_meshes_names) + str(grid_size)
-    gen_meshses_output_dir = Path("output/generated/" + foldername)
-    gen_meshses_output_dir.mkdir(exist_ok=True, parents=True)
+# --------------------------------------------------------------------------- #
+# 2-D shapes
+# --------------------------------------------------------------------------- #
 
-    choosen_meshes = [meshes_names.index(name) for name in choosen_meshes_names]
 
-    coefs = []
-    for i in range(grid_size):
-        for j in range(grid_size):
-            coef = (
-                1.0
-                / (grid_size - 1) ** 2
-                * np.array(
-                    [
-                        (grid_size - 1 - j) * (grid_size - 1 - i),
-                        j * (grid_size - 1 - i),
-                        j * i,
-                        (grid_size - 1 - j) * i,
-                    ]
-                )
-            )
-            coefs += [coef]
-            bin += [
-                wass_bary_3d(
-                    mus=np.array(
-                        [meshes[k].binary_distribution for k in choosen_meshes]
-                    ),
-                    coef=coef,
-                    n=n,
-                    a=a,
-                    iterations=3,
-                    prefactorized=False,
-                    conv=True,
-                    gamma=gamma,
-                )
-            ]
-    coefs = np.array(coefs).round(1)
-    # plot_cubic_mesh(fillBin(distribution_to_bin(x)))
-    # smoothed_fig(fillBin(distribution_to_bin(x)))
-    # Create a new figure with subplots
+def demo_shapes(
+    grid_size: int = 5,
+    gamma: float = 0.0015,
+    iterations: int = 3,
+    workers: int | None = None,
+) -> None:
+    shape_dir = REPO / "data" / "images" / "shapes"
+    shapes = {
+        name: load_binary_image(shape_dir / f"shape{i}filled.png").ravel()
+        for name, i in [("circle", 1), ("dots", 2), ("star", 3), ("fivestar", 4)]
+    }
+    mus = [shapes["circle"], shapes["star"], shapes["fivestar"], shapes["dots"]]
+    n = int(round(mus[0].size ** 0.5))
+
+    s = grid_size - 1
+    coefs = [
+        np.array([(s - j) * (s - i), j * (s - i), j * i, (s - j) * i]) / s**2
+        for i in range(grid_size)
+        for j in range(grid_size)
+    ]
+    barys = _bary_map(mus, coefs, n, gamma, iterations, True, workers)
+
+    _, axes = plt.subplots(grid_size, grid_size, figsize=(11, 11))
+    for k, bary in enumerate(barys):
+        ax = axes[k // grid_size, k % grid_size]
+        ax.imshow((bary.reshape(n, n) > 1e-6), cmap="binary")
+        ax.set_axis_off()
+    plt.subplots_adjust(left=0, bottom=0, right=1, top=1, wspace=0, hspace=0)
+    plt.savefig(OUTPUT / "shapes_grid.png", bbox_inches="tight")
+    plt.close()
+    print(f"wrote {OUTPUT / 'shapes_grid.png'}")
+
+    n_frames = 20
+    ts = np.linspace(0, 1, n_frames)
+    interp_coefs = [np.array([t, 1 - t]) for t in ts]
+    interp_barys = _bary_map(
+        [shapes["dots"], shapes["star"]],
+        interp_coefs,
+        n,
+        gamma,
+        iterations,
+        sharpen=False,
+        workers=workers,
+    )
+
+    frames: list[np.ndarray] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for i, bary in enumerate(interp_barys):
+            plt.imshow((bary.reshape(n, n) > 5e-6).astype(float), cmap="binary")
+            plt.axis("off")
+            frame = Path(tmp) / f"f{i:02d}.png"
+            plt.savefig(frame, bbox_inches="tight")
+            plt.close()
+            frames.append(imageio.imread(frame))
+    save_image_sequence(frames, OUTPUT / "dots_to_star.gif", duration=0.1)
+    print(f"wrote {OUTPUT / 'dots_to_star.gif'}")
+
+
+# --------------------------------------------------------------------------- #
+# Portrait morph
+# --------------------------------------------------------------------------- #
+
+
+def demo_portrait(
+    gamma: float = 0.0002,
+    iterations: int = 100,
+    n_frames: int = 20,
+    workers: int | None = None,
+) -> None:
+    monge = load_grayscale_image(REPO / "data" / "monge.png").ravel()
+    kant = load_grayscale_image(REPO / "data" / "kantorowich.png").ravel()
+    n = int(round(monge.size**0.5))
+
+    coefs = [np.array([t, 1 - t]) for t in np.linspace(0, 1, n_frames + 1)]
+    barys = _bary_map([monge, kant], coefs, n, gamma, iterations, False, workers)
+
+    frames: list[np.ndarray] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for i, bary in enumerate(barys):
+            plt.imshow(bary.reshape(n, n), cmap="binary")
+            plt.axis("off")
+            frame = Path(tmp) / f"f{i:02d}.png"
+            plt.savefig(frame, bbox_inches="tight")
+            plt.close()
+            frames.append(imageio.imread(frame))
+    save_image_sequence(frames, OUTPUT / "portrait.gif", duration=0.1)
+    print(f"wrote {OUTPUT / 'portrait.gif'}")
+
+
+# --------------------------------------------------------------------------- #
+# 3-D meshes via voxel grid + convolutional heat kernel
+# --------------------------------------------------------------------------- #
+
+
+def _load_or_build_meshes(n: int, names: list[str]) -> list[Mesh]:
+    cache_dir = OUTPUT / "meshes_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    meshes_dir = REPO / "data" / "meshes"
+    out = []
+    for name in names:
+        cache = cache_dir / f"{name}_{n}.pkl"
+        if cache.is_file():
+            with open(cache, "rb") as f:
+                out.append(pickle.load(f))
+            print(f"loaded {name} from cache")
+            continue
+        m = Mesh.from_file(meshes_dir / f"{name}.off", n=n)
+        print(f"voxelizing {name} ...")
+        m.voxelize()
+        m.mesh = None  # drop the trimesh + its caches before pickling
+        with open(cache, "wb") as f:
+            pickle.dump(m, f)
+        out.append(m)
+    return out
+
+
+def demo_meshes(
+    names: tuple[str, ...] = ("duck", "torus", "mushroom", "sphere_102"),
+    n: int = 50,
+    gamma: float = 0.0015,
+    iterations: int = 4,
+    grid_size: int = 4,
+    workers: int | None = None,
+) -> None:
+    meshes = _load_or_build_meshes(n, list(names))
+
+    fig_pts = point_cloud(distribution_to_point_cloud(meshes[0].distribution, scale=3))
+    fig_pts.write_html(str(OUTPUT / f"{names[0]}_points.html"))
+
+    fig_cubes = voxel_cubes(meshes[0].binary)
+    fig_cubes.write_html(str(OUTPUT / f"{names[0]}_cubes.html"))
+
+    out_dir = OUTPUT / "generated" / "_".join(names)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    s = grid_size - 1
+    coefs = [
+        np.array([(s - j) * (s - i), j * (s - i), j * i, (s - j) * i]) / s**2
+        for i in range(grid_size)
+        for j in range(grid_size)
+    ]
+    mus = [m.binary_distribution for m in meshes]
+    barys = _bary_map(mus, coefs, n, gamma, iterations, False, workers)
+
+    # Per-corner pure colors (one per input mesh); each grid cell is the
+    # barycentric blend, so the gradient across the grid is visible at a glance.
+    corner_rgb = np.array(
+        [
+            [0.93, 0.27, 0.27],  # red
+            [0.30, 0.69, 0.31],  # green
+            [0.13, 0.45, 0.86],  # blue
+            [0.98, 0.75, 0.18],  # yellow
+        ]
+    )
+
     fig = sp.make_subplots(
         rows=grid_size,
         cols=grid_size,
         specs=[[{"type": "scene"}] * grid_size] * grid_size,
+        horizontal_spacing=0.005,
+        vertical_spacing=0.005,
     )
+    for idx, (coef, bary) in enumerate(zip(coefs, barys, strict=False)):
+        i, j = divmod(idx, grid_size)
+        rgb = np.clip(coef @ corner_rgb, 0, 1)
+        color = f"rgb({int(rgb[0] * 255)},{int(rgb[1] * 255)},{int(rgb[2] * 255)})"
+        subplot, mesh = voxel_isosurface(distribution_to_binary(bary), smooth=30, color=color)
+        tag = "_".join(f"{w:.2f}{nm}" for w, nm in zip(coef, names, strict=False))
+        trimesh.exchange.export.export_mesh(mesh, out_dir / f"{tag}.off", file_type="off")
+        fig.add_trace(subplot.data[0], row=i + 1, col=j + 1)
 
-    # Loop over the subplots
-    for i in range(num_plots):
-        # Get the subplot ID
-        plot_id = (i // grid_size + 1, i % grid_size + 1)
-        # Create the smoothed figure subplot
-        subplot, mesh = smoothed_figure_sub(
-            distribution_to_binary(bin[i]), plot_id=plot_id, n=n
-        )
-        (gen_meshses_output_dir / foldername).mkdir(exist_ok=True, parents=True)
-        filename = (
-            str(coefs[i][0])
-            + choosen_meshes_names[0]
-            + "_"
-            + str(coefs[i][1])
-            + choosen_meshes_names[1]
-            + "_"
-            + str(coefs[i][2])
-            + choosen_meshes_names[2]
-            + "_"
-            + str(coefs[i][3])
-            + choosen_meshes_names[3]
-        )
-        trimesh.exchange.export.export_mesh(
-            mesh,
-            gen_meshses_output_dir / foldername / (filename + ".off"),
-            file_type="off",
-        )
-        # Add the subplot to the figure
-        fig.add_trace(subplot.data[0], row=plot_id[0], col=plot_id[1])
-
-    # Update the layout of the subplots
-    fig.update_layout(height=1600, width=1600, title_text=foldername)
-    fig.show()
+    scene_kw = subplot.layout.scene.to_plotly_json()
+    fig.update_scenes(scene_kw)
+    fig.update_layout(
+        height=1800,
+        width=1800,
+        paper_bgcolor="white",
+        margin=dict(l=0, r=0, t=40, b=0),
+        title=dict(text=" × ".join(names), x=0.5, xanchor="center"),
+    )
+    out_path = OUTPUT / f"{'_'.join(names)}_grid.html"
+    fig.write_html(str(out_path))
+    print(f"wrote {out_path}")
 
 
-def gaussian_transform(
-    meshes: list[Mesh],
-    meshes_names: list[str],
-    n: int = 40,
-    choosen_mesh_name: str = "duck",
+# --------------------------------------------------------------------------- #
+# Mesh-intrinsic heat-kernel demo
+# --------------------------------------------------------------------------- #
+
+
+def demo_gaussian(
+    mesh_name: str = "sphere_1300", gamma: float = 0.001, iterations: int = 5
 ) -> None:
-    used_mesh = meshes[meshes_names.index(choosen_mesh_name)]
-    used_mesh.cotangent_laplacian_with_area()
-    gaussain1 = used_mesh.gaussain_on_mesh(0)
-    gaussain2 = used_mesh.gaussain_on_mesh(150)
-    mesh: trimesh.Trimesh = used_mesh.mesh
-    # create a Plotly 3D surface plot of the sphere with colors based on the Gaussian distribution values
-    fig = go.Figure(
-        data=[
-            go.Mesh3d(
-                x=mesh.vertices[:, 0],
-                y=mesh.vertices[:, 1],
-                z=mesh.vertices[:, 2],
-                i=mesh.faces[:, 0],
-                j=mesh.faces[:, 1],
-                k=mesh.faces[:, 2],
-                intensity=gaussain1 + gaussain2,
-                colorscale="Viridis",
-            )
-        ]
+    mesh: trimesh.Trimesh = trimesh.load(
+        REPO / "data" / "meshes" / f"{mesh_name}.off", process=False
     )
-    fig.show()
+    L, areas = cotangent_laplacian(mesh)
+    T = np.diag(areas) + (gamma / 2.0) * L.toarray()
+    Lcho = slin.cholesky(T, lower=True)
+
+    g1 = gaussian_on_mesh(mesh, source=0)
+    g2 = gaussian_on_mesh(mesh, source=len(mesh.vertices) // 2)
+
+    fig = mesh_scalar_field(mesh, g1 + g2)
+    fig.write_html(str(OUTPUT / f"{mesh_name}_gaussians.html"))
+
+    apply_kernel = mesh_heat_operator(Lcho)
+    n_frames = 10
+    rows, cols = 2, 5
+    fig_grid = sp.make_subplots(
+        rows=rows,
+        cols=cols,
+        specs=[[{"type": "scene"}] * cols] * rows,
+        horizontal_spacing=0.005,
+        vertical_spacing=0.01,
+    )
+    subplot = None
+    for k in range(n_frames):
+        t = k / (n_frames - 1)
+        bary = wasserstein_barycenter(
+            [g1, g2],
+            [1 - t, t],
+            area=areas,
+            apply_kernel=apply_kernel,
+            iterations=iterations,
+            sharpen=False,
+        )
+        subplot = mesh_scalar_field(mesh, bary)
+        fig_grid.add_trace(subplot.data[0], row=k // cols + 1, col=k % cols + 1)
+
+    fig_grid.update_scenes(subplot.layout.scene.to_plotly_json())
+    fig_grid.update_layout(
+        height=600,
+        width=1500,
+        paper_bgcolor="white",
+        margin=dict(l=0, r=0, t=40, b=0),
+        title=dict(text=f"{mesh_name}: heat-kernel barycenter", x=0.5, xanchor="center"),
+    )
+    out_path = OUTPUT / f"{mesh_name}_barycenter.html"
+    fig_grid.write_html(str(out_path))
+    print(f"wrote {out_path}")
+
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+
+DEMOS = {
+    "shapes": demo_shapes,
+    "portrait": demo_portrait,
+    "meshes": demo_meshes,
+    "gaussian": demo_gaussian,
+}
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("demo", choices=list(DEMOS), help="which demo to run")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="parallel workers for the demo grid (default: all CPUs; pass 1 for serial)",
+    )
+    args = parser.parse_args(argv)
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    fn = DEMOS[args.demo]
+    if "workers" in fn.__code__.co_varnames:
+        fn(workers=args.workers)
+    else:
+        fn()
 
 
 if __name__ == "__main__":
-    output_dir = Path("output")
-    output_dir.mkdir(exist_ok=True, parents=True)
-
-    # shape_transforms()
-    # portrait_transform()
-    n = 40
-    meshes, meshes_names = init_meshes(n)
-    # mesh_transform(meshes, meshes_names, n)
-    gaussian_transform(meshes, meshes_names, n, "duck")
+    main()
