@@ -44,3 +44,14 @@ def color_channel_distributions(rgb: np.ndarray, invert: bool = True) -> list[np
             raise ValueError("Channel is empty after preprocessing.")
         channels.append((mat / total).ravel())
     return channels
+
+
+def bary_channels_to_rgb(
+    bary_channels: list[np.ndarray], n: int, *, peak: float | None = None
+) -> np.ndarray:
+    """Map per-channel barycenter masses back to an RGB image for ``imshow``."""
+    rgb = np.stack([channel.reshape(n, n) for channel in bary_channels], axis=-1)
+    scale = peak if peak is not None else rgb.max()
+    if scale > 0:
+        rgb = rgb / scale
+    return np.clip(1.0 - rgb, 0.0, 1.0)

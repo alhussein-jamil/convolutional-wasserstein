@@ -7,6 +7,7 @@ from convolutional_wasserstein.convolution import (
     naive_gaussian_convolution,
 )
 from convolutional_wasserstein.io import (
+    bary_channels_to_rgb,
     color_channel_distributions,
     load_binary_image,
     load_color_image,
@@ -42,6 +43,7 @@ __all__ = [
     "geodesic_distances",
     "grid_barycenter",
     "heat_convolve",
+    "bary_channels_to_rgb",
     "color_channel_distributions",
     "load_binary_image",
     "load_color_image",
