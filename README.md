@@ -5,8 +5,8 @@
 # Convolutional Wasserstein Distances
 
 [![CI](https://github.com/alhussein-jamil/convolutional-wasserstein/actions/workflows/ci.yml/badge.svg)](https://github.com/alhussein-jamil/convolutional-wasserstein/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/convolutional-wasserstein)](https://pypi.org/project/convolutional-wasserstein/)
-[![Python](https://img.shields.io/pypi/pyversions/convolutional-wasserstein)](https://pypi.org/project/convolutional-wasserstein/)
+[![version](https://img.shields.io/badge/version-0.2.0-blue)](https://github.com/alhussein-jamil/convolutional-wasserstein/blob/main/pyproject.toml)
+[![Python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12-blue?logo=python&logoColor=white)](https://github.com/alhussein-jamil/convolutional-wasserstein/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 `convolutional-wasserstein` is a compact Python reimplementation of the
