@@ -1,94 +1,247 @@
+<p align="center">
+  <img src="docs/assets/readme-hero.png" alt="Probability distributions on grids flowing through a barycenter onto a triangulated surface" width="100%">
+</p>
+
 # Convolutional Wasserstein Distances
 
-A clean reimplementation of
+[![CI](https://github.com/alhussein-jamil/convolutional-wasserstein/actions/workflows/ci.yml/badge.svg)](https://github.com/alhussein-jamil/convolutional-wasserstein/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/convolutional-wasserstein)](https://pypi.org/project/convolutional-wasserstein/)
+[![Python](https://img.shields.io/pypi/pyversions/convolutional-wasserstein)](https://pypi.org/project/convolutional-wasserstein/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> Solomon, de Goes, Peyré, Cuturi, Butscher, Nguyen, Du, Guibas (2015).
-> **Convolutional Wasserstein Distances: Efficient Optimal Transportation on Geometric Domains.**
-> *ACM Transactions on Graphics (SIGGRAPH).*
-> [Paper](https://people.csail.mit.edu/jsolomon/assets/convolutional_w2.compressed.pdf)
+`convolutional-wasserstein` is a compact Python reimplementation of the
+SIGGRAPH 2015 paper **Convolutional Wasserstein Distances: Efficient Optimal
+Transportation on Geometric Domains**.
 
-The paper's key idea: in entropy-regularized optimal transport, every step
-of the Sinkhorn iteration only ever needs the kernel `K` as a linear
-operator `K v`. On a Euclidean grid that operator is a Gaussian
-convolution — separable in `O(n^d)` per step — and on a triangle mesh it
-is one backward-Euler step of the heat equation `(D_a + tL)^{-1}`. The
-same Sinkhorn loop therefore solves Wasserstein barycenters on images,
-voxel grids, and curved surfaces by swapping a single callable.
+The central idea is beautifully practical: entropy-regularized optimal
+transport can be solved with Sinkhorn-style scaling, and the barycenter loop
+only needs to apply a kernel as `K(v)`. On regular image or voxel grids that
+operator is a separable Gaussian convolution. On triangle meshes it is one
+prefactored heat-equation solve. The solver in this package is therefore
+domain-agnostic: swap the heat operator, keep the Wasserstein barycenter loop.
+
+## Paper
+
+This repo follows:
+
+> Justin Solomon, Fernando de Goes, Gabriel Peyré, Marco Cuturi, Adrian
+> Butscher, Andy Nguyen, Tao Du, and Leonidas Guibas. 2015.
+> **Convolutional Wasserstein Distances: Efficient Optimal Transportation on
+> Geometric Domains.** *ACM Transactions on Graphics*, 34(4), 66:1-66:11.
+
+Links: [official PDF](https://people.csail.mit.edu/jsolomon/assets/convolutional_w2.compressed.pdf),
+[HAL archive](https://hal.archives-ouvertes.fr/hal-01188953),
+and [ACM DOI: 10.1145/2766963](https://dl.acm.org/doi/10.1145/2766963).
+
+<p align="center">
+  <img src="docs/assets/paper-snapshot.png" alt="Snapshot from the first page of the Solomon et al. paper" width="92%">
+</p>
+
+<p align="center">
+  <sub>Snapshot cropped from the official paper PDF above. Figure 1 in the paper shows 3-D shape interpolation by convolutional Wasserstein barycenters.</sub>
+</p>
+
+## How It Works
+
+The implementation is built around `wasserstein_barycenter(...)`: provide input
+probability distributions, barycentric weights, per-cell or per-vertex areas,
+and a callable `apply_kernel(v)`.
+
+<p align="center">
+  <img src="docs/assets/algorithm-flow.svg" alt="Flow diagram of the convolutional Wasserstein barycenter loop" width="100%">
+</p>
+
+The same Sinkhorn loop can run on several domains because the expensive object
+is never the dense pairwise transport matrix. It is the action of the heat
+kernel on a vector.
+
+<p align="center">
+  <img src="docs/assets/kernel-operators.svg" alt="Grid and mesh heat-kernel operators used by the same solver" width="100%">
+</p>
+
+## What Is Included
+
+| Path | Purpose |
+| --- | --- |
+| `src/convolutional_wasserstein/wasserstein.py` | Matrix-free Sinkhorn barycenters and mesh heat operator |
+| `src/convolutional_wasserstein/convolution.py` | Separable Gaussian convolution for 2-D and 3-D grids |
+| `src/convolutional_wasserstein/mesh.py` | Voxelized mesh distributions, cotangent Laplacian, geodesic Gaussians |
+| `src/convolutional_wasserstein/post_processing.py` | Entropic sharpening from the paper |
+| `scripts/` | Demo runner (`convw2`), assets, parallel grid helper, plotting |
+| `notebooks/EA Convolution.ipynb` | Interactive walkthrough (original notebook) |
+| `tests/` | Pytest coverage for convolution, barycenters, meshes, and sharpening |
+| `data/meshes/` | Sample `.off` meshes for the 3-D demos |
+| `data/images/portraits/` | Monge/Kantorovich portrait sources and processed demo PNGs |
+| `data/images/shapes/` | Synthetic shape PNGs (generated on first run) |
+
+## Install
+
+From PyPI:
+
+```sh
+pip install convolutional-wasserstein
+# or
+uv add convolutional-wasserstein
+```
+
+From a local checkout ([uv](https://docs.astral.sh/uv/) recommended):
+
+```sh
+uv sync --dev    # library + tests + demo deps (matplotlib, plotly, …)
+```
+
+Runtime library only:
+
+```sh
+uv sync --no-dev
+```
+
+Demos need the `demo` dependency group (included in `--dev`):
+
+```sh
+uv sync --group demo
+```
+
+Without uv:
+
+```sh
+pip install -e ".[dev]"
+```
+
+Make shortcuts:
+
+```sh
+make dev          # uv sync --dev
+make install      # uv sync --no-dev
+make pre-commit   # install hooks + lint/format all files
+make smoke        # pre-commit, pytest, all demos, notebook execute
+```
 
 ## Repository layout
 
 ```
-src/
-  convolution.py      separable Gaussian convolution (O(n^d))
-  wasserstein.py      unified Sinkhorn barycenter (Algorithm 2)
-  post_processing.py  entropic sharpening (Algorithm 3)
-  mesh.py             cotangent Laplacian, voxelization, geodesics
-  io.py               image loaders
-  viz.py              plotly / matplotlib helpers
-data/                 meshes (.off) and shape / portrait images
-main.py               CLI driving the four demos below
-EA Convolution.ipynb  the same demos, interactive
-build_notebook.py     regenerates the notebook from its cell sources
+src/convolutional_wasserstein/   # installable library
+scripts/                         # CLI demos (convw2), assets, plotting
+notebooks/EA Convolution.ipynb   # interactive tutorial
+tests/                           # pytest suite
+data/
+  meshes/                        # sample .off meshes
+  images/portraits/              # portrait sources + processed PNGs
+  images/shapes/                 # generated demo shapes (gitignored)
+docs/assets/                     # README figures only
 ```
 
-## Install
+## Run Demos
+
+Mesh assets live in `data/meshes/`. Shape and portrait PNGs are generated on
+first run if missing. Outputs are written to `output/` unless `--output` is
+provided.
+
+<p align="center">
+  <img src="docs/assets/demo-map.svg" alt="Map of the shape, portrait, mesh, and Gaussian demos" width="100%">
+</p>
 
 ```sh
-make install           # creates ./venv and installs the package in editable mode
-# or
-python -m venv venv && ./venv/bin/pip install -e .
+convw2 shapes      # 5x5 shape barycenter grid + dots-to-star gif
+convw2 portrait    # grayscale portrait interpolation gif
+convw2 meshes      # voxelized mesh barycenter grid and exported .off meshes
+convw2 gaussian    # heat-kernel barycenter between two Gaussians on a sphere
 ```
 
-Add `[notebook]` / `[dev]` extras (or `make dev`) for Jupyter and ruff.
-
-## Run the demos
+Useful flags:
 
 ```sh
-make demo-2d           # 5x5 grid of bilinear shape barycenters + dots-to-star gif
-make demo-portrait     # grayscale portrait morph (writes output/portrait.gif)
-make demo-3d           # voxelized solid-mesh barycenter grid
-make demo-gaussian     # heat-kernel barycenter between two Gaussians on a sphere
-make notebook          # interactive notebook of the same demos
+convw2 shapes --workers 8
+convw2 meshes --output output/mesh-run -v
 ```
 
-Each demo accepts `--workers N` (`python -m main shapes --workers 8`) to
-parallelize the coefficient grid across processes. Default is "all CPUs".
-Outputs land in `output/`.
+Equivalent Make targets:
 
-## Performance notes
+```sh
+make demo-shapes
+make demo-portrait
+make demo-meshes
+make demo-gaussian
+make notebook
+```
 
-* The Gaussian kernel is truncated at `6σ` (where `σ = n·√γ / 2` cells).
-  At that cutoff the dropped tail is below float64 round-off, so the result
-  is numerically identical to using the full `2n−1` kernel — but ~10–20×
-  faster per convolution for typical `γ`.
-* Barycenter grids run in parallel via `ProcessPoolExecutor` with `mus`
-  shared once through a worker initializer; serial and parallel runs are
-  bitwise identical.
-* Combined, the 5×5 shape demo at n=404 goes from ~200 s serial-naive to
-  ~3 s on a 20-core machine.
+Interactive notebook:
 
-## API in one minute
+```sh
+make notebook
+# or: uv run jupyter lab "notebooks/EA Convolution.ipynb"
+```
+
+Portrait assets live under `data/images/portraits/`: color sources in
+`raw/`, processed 202×202 grayscale PNGs at the top level. Regenerate with
+`make portraits`.
+
+## API
 
 ```python
-from src import grid_barycenter, wasserstein_barycenter, mesh_heat_operator
+from convolutional_wasserstein import grid_barycenter
 
-# 2-D image barycenter
-bary = grid_barycenter([mu1, mu2], weights=[0.5, 0.5], n=128, gamma=1e-3)
-
-# Mesh barycenter (factor T = D_a + (gamma/2) L once with Cholesky, reuse it)
-from src import cotangent_laplacian
-import numpy as np, scipy.linalg as slin
-L, areas = cotangent_laplacian(mesh)
-Lcho = slin.cholesky(np.diag(areas) + 0.5 * gamma * L.toarray(), lower=True)
-bary = wasserstein_barycenter(
-    [mu1, mu2], weights=[0.5, 0.5], area=areas,
-    apply_kernel=mesh_heat_operator(Lcho),
+bary = grid_barycenter(
+    [mu1, mu2],
+    weights=[0.5, 0.5],
+    n=128,
+    gamma=1e-3,
+    iterations=100,
 )
 ```
 
-## Notes
+```python
+import numpy as np
+import scipy.linalg as slin
+from convolutional_wasserstein import (
+    cotangent_laplacian,
+    mesh_heat_operator,
+    wasserstein_barycenter,
+)
 
-* Originally built as a course project for *MAP588 — Emerging Topics in Machine
-  Learning* (École Polytechnique).
-* The `convolutional_w2.compressed.tex` in the repository root is the
-  authoritative paper, included for reference.
+laplacian, areas = cotangent_laplacian(mesh)
+cholesky = slin.cholesky(np.diag(areas) + 0.5 * gamma * laplacian.toarray(), lower=True)
+
+bary = wasserstein_barycenter(
+    [mu1, mu2],
+    weights=[0.5, 0.5],
+    area=areas,
+    apply_kernel=mesh_heat_operator(cholesky),
+    iterations=50,
+    sharpen=False,
+)
+```
+
+## Implementation Notes
+
+- The grid kernel is truncated at `6 * sigma`, where the discarded Gaussian
+  tail is below float64 round-off for typical demo settings.
+- Barycenter grids are parallelized with `ProcessPoolExecutor`; distributions
+  are shared once through a worker initializer and each task sends only the
+  coefficient vector.
+- Mesh barycenters use either voxelized solids on a regular 3-D grid or an
+  intrinsic cotangent-Laplacian heat solve for surface distributions.
+- Entropic sharpening is available through `sharpen=True` on the barycenter
+  routines and implemented in `post_processing.py`.
+
+## Development
+
+Requires [uv](https://docs.astral.sh/uv/). After `uv sync --dev`:
+
+```sh
+make test
+make lint
+make format
+make lock    # refresh uv.lock after dependency changes
+make clean
+```
+
+## Publishing
+
+Tag a GitHub release; the publish workflow uploads to PyPI via
+[trusted publishing](https://docs.pypi.org/trusted-publishers/). Configure the
+PyPI trusted publisher for this repository before the first release.
+
+## License
+
+MIT

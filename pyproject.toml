@@ -4,36 +4,74 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "convolutional-wasserstein"
-version = "0.1.0"
-description = "Reimplementation of Solomon et al. 2015, 'Convolutional Wasserstein Distances: Efficient Optimal Transportation on Geometric Domains'."
+version = "0.2.0"
+description = "Convolutional Wasserstein distances — Solomon et al. 2015 reimplementation."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Alhussein Jamil" }]
+keywords = ["optimal-transport", "wasserstein", "sinkhorn", "computational-geometry"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
 dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
     "trimesh>=4.0",
     "rtree>=1.1",
     "scikit-image>=0.21",
-    "matplotlib>=3.7",
-    "plotly>=5.18",
-    "pandas>=2.0",
-    "imageio>=2.31",
     "Pillow>=10.0",
 ]
 
 [project.optional-dependencies]
-notebook = ["jupyter", "ipykernel", "nbformat"]
-dev = ["ruff", "pytest"]
+demo = ["matplotlib>=3.7", "plotly>=5.18", "imageio>=2.31", "jupyter>=1.0", "ipykernel>=6.29"]
+dev = ["ruff>=0.4", "pytest>=7.4", "build>=1.0", "pre-commit>=3.5", "convolutional-wasserstein[demo]"]
+
+[dependency-groups]
+demo = [
+    "matplotlib>=3.7",
+    "plotly>=5.18",
+    "imageio>=2.31",
+    "jupyter>=1.0",
+    "ipykernel>=6.29",
+]
+dev = [
+    "ruff>=0.4",
+    "pytest>=7.4",
+    "build>=1.0",
+    "pre-commit>=3.5",
+    { include-group = "demo" },
+]
+
+[project.urls]
+Homepage = "https://github.com/alhussein-jamil/convolutional-wasserstein"
+Repository = "https://github.com/alhussein-jamil/convolutional-wasserstein"
+
+[project.scripts]
+convw2 = "scripts.convw2:main"
+
+[tool.setuptools]
+include-package-data = true
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["src*"]
+where = ["src", "."]
+include = ["convolutional_wasserstein*", "scripts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+extend-exclude = ["*.ipynb"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

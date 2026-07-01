@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 430" role="img" aria-labelledby="title desc">
+  <title id="title">Convolutional Wasserstein barycenter flow</title>
+  <desc id="desc">Inputs are passed through a heat-kernel operator inside Sinkhorn scaling, combined as a weighted geometric mean, and optionally sharpened.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fbfb"/>
+      <stop offset="1" stop-color="#eef4f7"/>
+    </linearGradient>
+    <linearGradient id="massA" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#11b7d9"/>
+      <stop offset="1" stop-color="#76d86d"/>
+    </linearGradient>
+    <linearGradient id="massB" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff765c"/>
+      <stop offset="1" stop-color="#ffc44d"/>
+    </linearGradient>
+    <linearGradient id="massC" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffd36b"/>
+      <stop offset="1" stop-color="#42c6ff"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#12303a" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#335a66"/>
+    </marker>
+    <style>
+      .card { fill: #ffffff; stroke: #d9e5e8; stroke-width: 1.5; filter: url(#softShadow); }
+      .label { font: 700 20px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #17313a; }
+      .small { font: 500 14px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #526b74; }
+      .mono { font: 600 15px "SFMono-Regular", Consolas, "Liberation Mono", monospace; fill: #264852; }
+      .arrow { stroke: #335a66; stroke-width: 3; fill: none; marker-end: url(#arrow); stroke-linecap: round; }
+      .loop { stroke: #74a9b7; stroke-width: 2.5; fill: none; marker-end: url(#arrow); stroke-linecap: round; stroke-dasharray: 8 8; }
+      .grid { stroke: #d1dee2; stroke-width: 1; }
+    </style>
+  </defs>
+
+  <rect width="1180" height="430" rx="26" fill="url(#bg)"/>
+  <text x="590" y="50" text-anchor="middle" class="label" style="font-size:28px">One Sinkhorn loop, many geometric domains</text>
+  <text x="590" y="78" text-anchor="middle" class="small">The implementation only asks for an apply_kernel(v) callable.</text>
+
+  <rect x="40" y="120" width="210" height="230" rx="16" class="card"/>
+  <text x="145" y="155" text-anchor="middle" class="label">Input marginals</text>
+  <text x="145" y="180" text-anchor="middle" class="small">mu_1, ..., mu_k</text>
+  <g transform="translate(75 205)">
+    <path class="grid" d="M0 0H120M0 20H120M0 40H120M0 60H120M0 80H120M0 100H120M0 0V100M20 0V100M40 0V100M60 0V100M80 0V100M100 0V100M120 0V100"/>
+    <circle cx="26" cy="70" r="13" fill="url(#massA)" opacity="0.9"/>
+    <circle cx="58" cy="38" r="18" fill="url(#massB)" opacity="0.85"/>
+    <circle cx="90" cy="58" r="12" fill="url(#massC)" opacity="0.95"/>
+  </g>
+
+  <rect x="310" y="120" width="210" height="230" rx="16" class="card"/>
+  <text x="415" y="155" text-anchor="middle" class="label">Heat kernel</text>
+  <text x="415" y="180" text-anchor="middle" class="small">matrix-free operator</text>
+  <g transform="translate(358 215)">
+    <circle cx="58" cy="58" r="54" fill="#e9f7f8" stroke="#b5dce1" stroke-width="2"/>
+    <circle cx="58" cy="58" r="33" fill="#c4edf0"/>
+    <circle cx="58" cy="58" r="14" fill="#3cc3d6"/>
+    <path d="M15 58 C35 28, 82 25, 102 58 C82 91, 35 88, 15 58" fill="none" stroke="#ffb545" stroke-width="4" opacity="0.8"/>
+  </g>
+  <text x="415" y="332" text-anchor="middle" class="mono">K v</text>
+
+  <rect x="580" y="120" width="210" height="230" rx="16" class="card"/>
+  <text x="685" y="155" text-anchor="middle" class="label">Sinkhorn scaling</text>
+  <text x="685" y="180" text-anchor="middle" class="small">alternate v and w updates</text>
+  <g transform="translate(625 218)">
+    <path d="M18 68 A42 42 0 1 1 92 92" fill="none" stroke="#11b7d9" stroke-width="8" stroke-linecap="round"/>
+    <path d="M100 52 A42 42 0 1 1 26 28" fill="none" stroke="#ff765c" stroke-width="8" stroke-linecap="round"/>
+    <circle cx="58" cy="58" r="17" fill="#ffffff" stroke="#d8e4e7" stroke-width="2"/>
+    <text x="58" y="64" text-anchor="middle" class="mono">K</text>
+  </g>
+  <text x="685" y="332" text-anchor="middle" class="mono">w = mu / K(a v)</text>
+
+  <rect x="850" y="120" width="135" height="230" rx="16" class="card"/>
+  <text x="917.5" y="155" text-anchor="middle" class="label">Mean</text>
+  <text x="917.5" y="180" text-anchor="middle" class="small">weighted</text>
+  <g transform="translate(875 215)">
+    <path d="M42 0 L84 24 L84 72 L42 96 L0 72 L0 24 Z" fill="#fff6dc" stroke="#f1d67a" stroke-width="2"/>
+    <circle cx="42" cy="48" r="30" fill="url(#massC)" opacity="0.9"/>
+    <path d="M20 62 C36 28, 53 24, 66 58" fill="none" stroke="#ffffff" stroke-width="6" opacity="0.85"/>
+  </g>
+  <text x="917.5" y="332" text-anchor="middle" class="mono">prod d_i^a_i</text>
+
+  <rect x="1035" y="120" width="105" height="230" rx="16" class="card"/>
+  <text x="1087.5" y="155" text-anchor="middle" class="label">Output</text>
+  <text x="1087.5" y="180" text-anchor="middle" class="small">barycenter</text>
+  <g transform="translate(1056 214)">
+    <path d="M32 6 C57 12, 69 34, 62 59 C53 91, 13 93, 5 61 C-2 34, 8 13, 32 6Z" fill="#ffc44d"/>
+    <path d="M20 68 C34 41, 43 32, 54 51" fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round" opacity="0.75"/>
+  </g>
+  <text x="1087.5" y="332" text-anchor="middle" class="mono">rho</text>
+
+  <path class="arrow" d="M250 235 H300"/>
+  <path class="arrow" d="M520 235 H570"/>
+  <path class="arrow" d="M790 235 H840"/>
+  <path class="arrow" d="M985 235 H1025"/>
+  <path class="loop" d="M717 350 C735 392, 616 392, 632 350"/>
+
+  <text x="675" y="398" text-anchor="middle" class="small">repeat for a fixed iteration budget, then optionally apply entropic sharpening</text>
+</svg>

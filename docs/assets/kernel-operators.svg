@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 500" role="img" aria-labelledby="title desc">
+  <title id="title">Kernel operators for grids and meshes</title>
+  <desc id="desc">On regular grids the kernel is applied by separable Gaussian convolution. On triangle meshes the same role is played by one backward Euler heat equation solve.</desc>
+  <defs>
+    <linearGradient id="panelA" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fdff"/>
+      <stop offset="1" stop-color="#eef8f2"/>
+    </linearGradient>
+    <linearGradient id="panelB" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff9ef"/>
+      <stop offset="1" stop-color="#f2f7ff"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2b525e"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0f2b35" flood-opacity="0.10"/>
+    </filter>
+    <style>
+      .panel { stroke: #d9e6ea; stroke-width: 1.5; filter: url(#shadow); }
+      .title { font: 800 25px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #17313a; }
+      .label { font: 700 17px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #254852; }
+      .small { font: 500 14px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #5a7179; }
+      .mono { font: 650 16px "SFMono-Regular", Consolas, "Liberation Mono", monospace; fill: #1f414b; }
+      .arrow { stroke: #2b525e; stroke-width: 3; fill: none; marker-end: url(#arrow); stroke-linecap: round; }
+      .grid { stroke: #bfd3d8; stroke-width: 1; }
+    </style>
+  </defs>
+
+  <rect width="1180" height="500" rx="28" fill="#fbfcfd"/>
+  <text x="590" y="52" text-anchor="middle" class="title">The trick: never build the dense transport kernel</text>
+  <text x="590" y="82" text-anchor="middle" class="small">Both domains expose the same operation, K(v), to the barycenter solver.</text>
+
+  <rect x="45" y="125" width="525" height="320" rx="22" fill="url(#panelA)" class="panel"/>
+  <text x="307" y="165" text-anchor="middle" class="title">Regular image or voxel grid</text>
+  <text x="307" y="194" text-anchor="middle" class="small">Gaussian heat kernel factorizes along axes</text>
+
+  <g transform="translate(88 232)">
+    <path class="grid" d="M0 0H150M0 25H150M0 50H150M0 75H150M0 100H150M0 125H150M0 150H150M0 0V150M25 0V150M50 0V150M75 0V150M100 0V150M125 0V150M150 0V150"/>
+    <circle cx="76" cy="76" r="48" fill="#c9f2e7" opacity="0.75"/>
+    <circle cx="76" cy="76" r="28" fill="#62d2bf" opacity="0.85"/>
+    <circle cx="76" cy="76" r="10" fill="#0ea6c8"/>
+  </g>
+  <path class="arrow" d="M260 306 H335"/>
+  <g transform="translate(355 245)">
+    <rect x="0" y="0" width="145" height="38" rx="10" fill="#ffffff" stroke="#cfe1e6"/>
+    <rect x="0" y="56" width="145" height="38" rx="10" fill="#ffffff" stroke="#cfe1e6"/>
+    <rect x="0" y="112" width="145" height="38" rx="10" fill="#ffffff" stroke="#cfe1e6"/>
+    <text x="72.5" y="25" text-anchor="middle" class="mono">convolve x</text>
+    <text x="72.5" y="81" text-anchor="middle" class="mono">convolve y</text>
+    <text x="72.5" y="137" text-anchor="middle" class="mono">convolve z</text>
+  </g>
+  <text x="307" y="414" text-anchor="middle" class="mono">make_heat_operator(shape, gamma)</text>
+
+  <rect x="610" y="125" width="525" height="320" rx="22" fill="url(#panelB)" class="panel"/>
+  <text x="872" y="165" text-anchor="middle" class="title">Triangle mesh surface</text>
+  <text x="872" y="194" text-anchor="middle" class="small">heat diffusion replaces pairwise geodesic distances</text>
+
+  <g transform="translate(646 238)">
+    <path d="M0 110 C50 22, 110 20, 165 68 C220 117, 280 105, 335 22 C314 145, 238 180, 165 145 C102 115, 55 155, 0 110Z" fill="#e8eef2" stroke="#9db3bc" stroke-width="2"/>
+    <path d="M42 95 L90 54 L140 86 L190 50 L250 92 L306 48M90 54 L106 125 L140 86 L165 145 L190 50 L220 124 L250 92M42 95 L106 125 L165 145 L220 124 L306 48" fill="none" stroke="#ffffff" stroke-width="2" opacity="0.95"/>
+    <circle cx="250" cy="92" r="34" fill="#ffbf42" opacity="0.65"/>
+    <circle cx="250" cy="92" r="14" fill="#ff8d4a"/>
+    <circle cx="90" cy="54" r="26" fill="#2ebfd1" opacity="0.55"/>
+  </g>
+  <path class="arrow" d="M806 380 H930"/>
+  <g transform="translate(948 333)">
+    <rect x="0" y="0" width="150" height="74" rx="14" fill="#ffffff" stroke="#d8e4e8"/>
+    <text x="75" y="30" text-anchor="middle" class="mono">(D_a + tL)x</text>
+    <text x="75" y="54" text-anchor="middle" class="mono">= v</text>
+  </g>
+  <text x="872" y="415" text-anchor="middle" class="mono">
+    <tspan x="872" dy="0">cotangent_laplacian(mesh)</tspan>
+    <tspan x="872" dy="21">mesh_heat_operator(Lcho)</tspan>
+  </text>
+</svg>
